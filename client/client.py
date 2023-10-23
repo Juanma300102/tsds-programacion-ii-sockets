@@ -1,9 +1,22 @@
 import json
+from json.decoder import JSONDecodeError
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import socket
 import threading
+import logging
 from shared import Message, MessageTypeEnum
+
+
+# Create a logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Configure the logger
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
 
 
 class ClientConnection:
@@ -16,23 +29,30 @@ class ClientConnection:
         self.port = port
 
     def connect(self):
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.connect((self.host, self.port))
+        try:
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.connect((self.host, self.port))
+        except ConnectionRefusedError as err:
+            messagebox.showerror(title="Connection error", message=err.strerror)
 
     def receive_message(self) -> Message | None:
         try:
             data = self.client_socket.recv(1024)
+            logger.info(data)
             loaded = json.loads(data.decode("utf-8"))
             return Message(
                 type=MessageTypeEnum(int(loaded["message_type"])),
                 message=loaded["message"],
                 destination=loaded["destination"],
             )
-        except OSError as err:
+        except JSONDecodeError as err:
             raise err
         except ValueError as err:
-            print("Malformed message received. Skipping...")
+            logger.error(err, exc_info=True)
+            logger.info("Malformed message received. Skipping...")
             return None
+        except Exception as err:
+            raise err
 
     def send_message(self, message: bytes):
         self.client_socket.send(message)
@@ -127,12 +147,16 @@ class ClientApp:
 
     def receive_messages(self):
         while self.connected:
-            message = self.connection.receive_message()
-            if message:
-                self.handle_message(message)
-            """ 
-            else:
-                # Handle disconnection """
+            try:
+                message = self.connection.receive_message()
+                if message:
+                    self.handle_message(message)
+                """ 
+                else:
+                    # Handle disconnection """
+            except JSONDecodeError:
+                self.disconnect_from_server()
+                self.display_message("Server connection closed.")
 
     def send_message(self):
         message = Message(
