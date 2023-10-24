@@ -1,3 +1,4 @@
+import json
 import socket
 import threading
 import logging
@@ -46,16 +47,46 @@ class Client:
             time.sleep(1)
             try:
                 data = self.socket.recv(2065)
-                if not data:
-                    continue  # Continue listening even if there is no data
-
-                logger.info(f"Received from {client_ip}: {data.decode('utf-8')}")
+                message = self.parse_message(data)
+                if message.message_type == MessageTypeEnum.DISCONNECT_NOTIFICATION:
+                    logger.info(
+                        f"Ending connection with client {client_ip} due to disconnect notification."
+                    )
+                    break
+                self.handle_message(message)
             except Exception as err:
                 logger.error(err)
                 logger.info("Removing client due to network error")
-                self.client_list.remove_client(self)
-                self.client_list.update_clients()
-                logger.info(f"Client successfully disconnected from {client_ip}")
+                break
+
+        self.client_list.remove_client(self)
+        self.client_list.update_clients()
+        logger.info(f"Client successfully disconnected from {client_ip}")
+
+    def parse_message(self, data: bytes) -> Message:
+        """parse binary data to a Message instance.
+
+        Args:
+            data (bytes)
+
+        Returns:
+            Message
+        """
+        try:
+            return Message.decode(data)
+        except ValueError as err:
+            logger.error(err, exc_info=True)
+            logger.info("Malformed message received.")
+            raise err
+
+    def handle_message(self, message: Message) -> None:
+        """Handle a client message. In this instance, there won't be any Disconnection notification message type
+
+        Args:
+            message (Message):
+        """
+        if message.message_type == MessageTypeEnum.CLIENT_TO_SERVER:
+            logger.info(f"CLIENT MESSAGE: {message.message}")
 
 
 class ClientList:
@@ -91,7 +122,7 @@ class ClientList:
         message = Message(type=MessageTypeEnum.CLIENT_LIST_UPDATE, message=client_list)
         for client in self.clients:
             client.socket.send(message.dump())
-        logger.info("Client list sent to all connected clients")
+        logger.info("Updated client list sent to all connected clients")
 
 
 class Server:

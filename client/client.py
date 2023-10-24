@@ -38,13 +38,7 @@ class ClientConnection:
     def receive_message(self) -> Message | None:
         try:
             data = self.client_socket.recv(1024)
-            logger.info(data)
-            loaded = json.loads(data.decode("utf-8"))
-            return Message(
-                type=MessageTypeEnum(int(loaded["message_type"])),
-                message=loaded["message"],
-                destination=loaded["destination"],
-            )
+            return Message.decode(data)
         except JSONDecodeError as err:
             raise err
         except ValueError as err:
@@ -61,6 +55,7 @@ class ClientConnection:
 class ClientApp:
     def __init__(self, root: tk.Tk, connection: ClientConnection):
         self.root = root
+        self.root.config(padx=10, pady=10)
         self.root.title("Client")
 
         self.connection = connection
@@ -74,6 +69,18 @@ class ClientApp:
         self.port_label.pack()
         self.port_entry = tk.Entry(root)
         self.port_entry.pack()
+
+        self.alias_frame = tk.LabelFrame(root, text="Nickname")
+        self.alias_frame.config(padx=10, pady=10)
+
+        self.alias_label = tk.Label(self.alias_frame, text="Client nickname:")
+        self.alias_label.pack()
+        self.alias_entry = tk.Entry(self.alias_frame)
+        self.alias_entry.pack()
+        self.connect_button = tk.Button(self.alias_frame, text="Update")
+        self.connect_button.pack()
+
+        self.alias_frame.pack()
 
         self.connect_button = tk.Button(
             root, text="Connect", command=self.connect_to_server
@@ -95,8 +102,8 @@ class ClientApp:
 
         self.message_display_label = tk.Label(root, text="Server Messages:")
         self.message_display_label.pack()
-        self.message_display = tk.Text(root, height=10, width=40)
-        self.message_display.pack()
+        self.message_display = tk.Text(root, height=10, width=40, state=tk.DISABLED)
+        self.message_display.pack(fill=tk.X)
 
         self.text_input_label = tk.Label(root, text="Your Message:")
         self.text_input_label.pack()
@@ -116,23 +123,32 @@ class ClientApp:
 
     def disconnect_from_server(self):
         if self.connected:
+            self.send_disconnect_notification()
             # Close the connection and reset UI elements
             self.connection.client_socket.close()
+            self.handle_disconnection()
 
-            self.connected = False
-            self.connect_button.config(state=tk.NORMAL)
-            self.host_entry.config(state=tk.NORMAL)
-            self.port_entry.config(state=tk.NORMAL)
-            self.text_input_entry.config(state=tk.DISABLED)
-            self.send_button.config(state=tk.DISABLED)
-            self.disconnect_button.config(state=tk.DISABLED)
+    def handle_disconnection(self):
+        self.connected = False
+        self.connect_button.config(state=tk.NORMAL)
+        self.host_entry.config(state=tk.NORMAL)
+        self.port_entry.config(state=tk.NORMAL)
+        self.text_input_entry.config(state=tk.DISABLED)
+        self.send_button.config(state=tk.DISABLED)
+        self.disconnect_button.config(state=tk.DISABLED)
+
+    def send_disconnect_notification(self):
+        message = self.make_message(
+            message="", type=MessageTypeEnum.DISCONNECT_NOTIFICATION
+        )
+        self.connection.send_message(message.dump())
 
     def connect_to_server(self):
         host = self.host_entry.get()
         port = int(self.port_entry.get())
-        self.connected = True
         self.connection.set_host_port(host, port)
         self.connection.connect()
+        self.connected = True
 
         # Enable/disable GUI elements based on the connection state
         self.connect_button.config(state=tk.DISABLED)
@@ -140,38 +156,49 @@ class ClientApp:
         self.port_entry.config(state=tk.DISABLED)
         self.text_input_entry.config(state=tk.NORMAL)
         self.send_button.config(state=tk.NORMAL)
+        self.disconnect_button.config(state=tk.NORMAL)
 
         # Start a thread to receive messages
         self.receive_thread = threading.Thread(target=self.receive_messages)
         self.receive_thread.start()
+        self.display_message(
+            f"Connected to server at {self.connection.host}:{self.connection.port}"
+        )
 
     def receive_messages(self):
         while self.connected:
             try:
                 message = self.connection.receive_message()
                 if message:
-                    self.handle_message(message)
-                """ 
-                else:
-                    # Handle disconnection """
+                    self.handle_incoming_message(message)
             except JSONDecodeError:
-                self.disconnect_from_server()
+                self.handle_disconnection()
                 self.display_message("Server connection closed.")
+            except OSError as err:
+                self.handle_disconnection()
 
-    def send_message(self):
-        message = Message(
-            message=self.text_input_entry.get(), type=MessageTypeEnum.CLIENT_TO_SERVER
-        )
-        self.connection.send_message(message.dump())
-        self.display_message(f"You: {message.message}")
-        self.text_input_entry.delete(0, tk.END)
-
-    def handle_message(self, message: Message):
+    def handle_incoming_message(self, message: Message):
         if message.message_type == MessageTypeEnum.CLIENT_LIST_UPDATE:
             self.client_listselect["values"] = message.message.split(",")
             return
         self.display_message(message.message)
 
+    def make_message(
+        self,
+        message: str,
+        destination: str | None = None,
+        type: MessageTypeEnum = MessageTypeEnum.CLIENT_TO_SERVER,
+    ) -> Message:
+        return Message(message=message, type=type, destination=destination)
+
+    def send_message(self):
+        message = self.make_message(message=self.text_input_entry.get())
+        self.connection.send_message(message.dump())
+        self.display_message(f"You: {message.message}")
+        self.text_input_entry.delete(0, tk.END)
+
     def display_message(self, message: str):
+        self.message_display.config(state=tk.NORMAL)
         self.message_display.insert(tk.END, message + "\n")
         self.message_display.see(tk.END)
+        self.message_display.config(state=tk.DISABLED)
