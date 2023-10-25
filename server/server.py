@@ -4,10 +4,11 @@ import threading
 import logging
 import time
 from typing import Set
+import uuid
 from shared.message import Message, MessageTypeEnum
 
 # Create a logger
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Configure the logger
@@ -29,6 +30,8 @@ class Client:
             - `address` (tuple): The client's address (IP, port).
             - `client_list` (ClientList): The list of connected clients.
         """
+        self.uuid = str(uuid.uuid4())
+        self.alias = ""
         self.socket = socket
         self.address = address
         self.client_list = client_list
@@ -39,6 +42,12 @@ class Client:
         """
         client_ip = self.address[0]
         logger.info(f"A new client connects from {client_ip}")
+
+        uuid_message = Message(
+            type=MessageTypeEnum.GENERATED_CLIENT_UUID, message=self.uuid
+        )
+
+        self.socket.send(uuid_message.dump())
 
         self.client_list.add_client(self)
         self.client_list.update_clients()
@@ -62,6 +71,7 @@ class Client:
         self.client_list.remove_client(self)
         self.client_list.update_clients()
         logger.info(f"Client successfully disconnected from {client_ip}")
+        del self
 
     def parse_message(self, data: bytes) -> Message:
         """parse binary data to a Message instance.
@@ -87,6 +97,29 @@ class Client:
         """
         if message.message_type == MessageTypeEnum.CLIENT_TO_SERVER:
             logger.info(f"CLIENT MESSAGE: {message.message}")
+        if message.message_type == MessageTypeEnum.UPDATE_CLIENT_ALIAS:
+            self.update_alias(message.message)
+            logger.info(
+                f"Client {self.uuid} updated its alias to {self.alias} successfuly"
+            )
+        if message.message_type == MessageTypeEnum.CLIENT_TO_CLIENT:
+            logger.info(f"Received message from {message.from_}")
+            logger.info(message.dump())
+            self.send_to_destination(message)
+
+    def send_to_destination(self, message: Message) -> None:
+        if not message.destination:
+            raise ValueError("Missing destination.")
+        logger.info(f"Sending message from {message.from_} to {message.destination}")
+        destination_client = self.client_list.get_by_uuid(message.destination)
+        destination_client.socket.send(message.dump())
+
+    def update_alias(self, alias: str):
+        self.alias = alias
+        self.client_list.update_clients()
+
+    def dump(self) -> dict:
+        return {"uuid": self.uuid, "alias": self.alias, "address": self.address}
 
 
 class ClientList:
@@ -95,6 +128,12 @@ class ClientList:
         Initialize a list to keep track of connected clients.
         """
         self.clients: Set[Client] = set()
+
+    def get_by_uuid(self, uuid: str) -> Client:
+        for client in self.clients:
+            if client.uuid == uuid:
+                return client
+        raise ValueError("No client match the given uuid")
 
     def add_client(self, client: Client) -> None:
         """
@@ -118,8 +157,10 @@ class ClientList:
         """
         Send an updated client list to all connected clients.
         """
-        client_list = ",".join([client.address[0] for client in self.clients])
-        message = Message(type=MessageTypeEnum.CLIENT_LIST_UPDATE, message=client_list)
+        client_list = [client.dump() for client in self.clients]
+        message = Message(
+            type=MessageTypeEnum.CLIENT_LIST_UPDATE, message=json.dumps(client_list)
+        )
         for client in self.clients:
             client.socket.send(message.dump())
         logger.info("Updated client list sent to all connected clients")

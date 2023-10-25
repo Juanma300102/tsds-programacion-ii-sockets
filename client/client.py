@@ -6,15 +6,16 @@ import socket
 import threading
 import logging
 from shared import Message, MessageTypeEnum
-
+from typing import Dict, List
+from sys import stdout
 
 # Create a logger
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Configure the logger
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-stream_handler = logging.StreamHandler()
+stream_handler = logging.StreamHandler(stdout)
 stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 
@@ -23,10 +24,21 @@ class ClientConnection:
     port: int
     host: str
     client_socket: socket.socket
+    alias: str
+    uuid: str
+
+    def __init__(self) -> None:
+        self.alias = ""
 
     def set_host_port(self, host: str, port: int):
         self.host = host
         self.port = port
+
+    def set_alias(self, alias: str) -> None:
+        self.alias = alias
+
+    def set_uuid(self, uuid: str) -> None:
+        self.uuid = uuid
 
     def connect(self):
         try:
@@ -51,8 +63,14 @@ class ClientConnection:
     def send_message(self, message: bytes):
         self.client_socket.send(message)
 
+    def handle_disconnection(self):
+        self.alias = ""
+        self.uuid = ""
+
 
 class ClientApp:
+    raw_client_list: List[Dict[str, str]]
+
     def __init__(self, root: tk.Tk, connection: ClientConnection):
         self.root = root
         self.root.config(padx=10, pady=10)
@@ -77,8 +95,13 @@ class ClientApp:
         self.alias_label.pack()
         self.alias_entry = tk.Entry(self.alias_frame)
         self.alias_entry.pack()
-        self.connect_button = tk.Button(self.alias_frame, text="Update")
-        self.connect_button.pack()
+        self.update_nickname_button = tk.Button(
+            self.alias_frame,
+            text="Update",
+            command=self.update_nickname,
+            state=tk.DISABLED,
+        )
+        self.update_nickname_button.pack()
 
         self.alias_frame.pack()
 
@@ -98,7 +121,7 @@ class ClientApp:
             root, selectmode=tk.SINGLE, listvariable=self.client_list
             self.client_listbox.pack()
         ) """
-        self.client_listselect.pack()
+        self.client_listselect.pack(fill=tk.X)
 
         self.message_display_label = tk.Label(root, text="Server Messages:")
         self.message_display_label.pack()
@@ -121,14 +144,10 @@ class ClientApp:
         )
         self.disconnect_button.pack()
 
-    def disconnect_from_server(self):
-        if self.connected:
-            self.send_disconnect_notification()
-            # Close the connection and reset UI elements
-            self.connection.client_socket.close()
-            self.handle_disconnection()
-
     def handle_disconnection(self):
+        """Subsequent events following a disconnection from the server.
+        This may be triggered by several events like network error or user intentional disconnection.
+        """
         self.connected = False
         self.connect_button.config(state=tk.NORMAL)
         self.host_entry.config(state=tk.NORMAL)
@@ -136,14 +155,23 @@ class ClientApp:
         self.text_input_entry.config(state=tk.DISABLED)
         self.send_button.config(state=tk.DISABLED)
         self.disconnect_button.config(state=tk.DISABLED)
+        self.update_nickname_button.config(state=tk.DISABLED)
+        self.client_listselect.set("")
+        self.client_listselect["values"] = []
+        self.clear_messages()
+        self.connection.handle_disconnection()
 
     def send_disconnect_notification(self):
+        """Notify the server to finish the connection when triggered by user."""
         message = self.make_message(
             message="", type=MessageTypeEnum.DISCONNECT_NOTIFICATION
         )
         self.connection.send_message(message.dump())
 
     def connect_to_server(self):
+        """Validate inputs and stablish connection with the server.
+        Also it sets the ui config for the connected client status.
+        """
         host = self.host_entry.get()
         port = int(self.port_entry.get())
         self.connection.set_host_port(host, port)
@@ -157,15 +185,23 @@ class ClientApp:
         self.text_input_entry.config(state=tk.NORMAL)
         self.send_button.config(state=tk.NORMAL)
         self.disconnect_button.config(state=tk.NORMAL)
+        self.update_nickname_button.config(state=tk.NORMAL)
 
         # Start a thread to receive messages
         self.receive_thread = threading.Thread(target=self.receive_messages)
         self.receive_thread.start()
+
+        # Look if there is a nickname in the entry and update it
+        nick = self.alias_entry.get()
+        if nick:
+            self.update_nickname()
+
         self.display_message(
             f"Connected to server at {self.connection.host}:{self.connection.port}"
         )
 
     def receive_messages(self):
+        """Socket message main handler."""
         while self.connected:
             try:
                 message = self.connection.receive_message()
@@ -178,10 +214,49 @@ class ClientApp:
                 self.handle_disconnection()
 
     def handle_incoming_message(self, message: Message):
+        """Handle parsed incoming messages based on type.
+
+        Args:
+            message (Message)
+        """
         if message.message_type == MessageTypeEnum.CLIENT_LIST_UPDATE:
-            self.client_listselect["values"] = message.message.split(",")
+            clients = self.parse_client_list(message.message)
+            self.raw_client_list = clients
+            clients = [
+                client for client in clients if client["uuid"] != self.connection.uuid
+            ]
+            self.client_listselect["values"] = [
+                f"{client['alias']}@{client['uuid']}"
+                if client["alias"] != ""
+                else f"{client['address'][0]}@{client['uuid']}"
+                for client in clients
+            ]
+            self.client_listselect.set("")
+            return
+        if message.message_type == MessageTypeEnum.GENERATED_CLIENT_UUID:
+            self.connection.set_uuid(message.message)
+            logger.info(f"Received system uuid {message.message}")
+            return
+        if message.message_type == MessageTypeEnum.CLIENT_TO_CLIENT:
+            if not message.from_:
+                raise ValueError("Missing from property in message.")
+            client = self.get_raw_client_by_uuid(message.from_)
+            self.display_message(
+                f"{client['alias'] if client['alias'] else client['address'][0]} to you: {message.message}"
+            )
             return
         self.display_message(message.message)
+
+    def parse_client_list(self, data: str | bytes) -> List[Dict[str, str]]:
+        """takes a json formated string and loads it to internal types
+
+        Args:
+            data (str | bytes)
+
+        Returns:
+            List[Dict[str, str]]
+        """
+        return json.loads(data)
 
     def make_message(
         self,
@@ -189,16 +264,89 @@ class ClientApp:
         destination: str | None = None,
         type: MessageTypeEnum = MessageTypeEnum.CLIENT_TO_SERVER,
     ) -> Message:
-        return Message(message=message, type=type, destination=destination)
+        """Generates a Message instance.
+
+        Args:
+            message (str)
+            destination (str | None, optional): Defaults to None.
+            type (MessageTypeEnum, optional): Defaults to MessageTypeEnum.CLIENT_TO_SERVER.
+
+        Returns:
+            Message: _description_
+        """
+        instance = Message(message=message, type=type, destination=destination)
+        if type == MessageTypeEnum.CLIENT_TO_CLIENT:
+            logger.info(f"Injecting uuid into message {self.connection.uuid}")
+            instance.from_ = self.connection.uuid
+        return instance
 
     def send_message(self):
-        message = self.make_message(message=self.text_input_entry.get())
+        """UI command to send a message with the current user input content."""
+        destination = self.client_listselect.get()
+        if not destination:
+            messagebox.showerror(
+                title="Missing destination",
+                message="You must select a client destination",
+            )
+            return
+        client = destination.split("@")[0]
+        uuid = destination.split("@")[1]
+        message = self.make_message(
+            message=self.text_input_entry.get(),
+            type=MessageTypeEnum.CLIENT_TO_CLIENT,
+            destination=uuid,
+        )
         self.connection.send_message(message.dump())
-        self.display_message(f"You: {message.message}")
+        self.display_message(f"You to {client}: {message.message}")
         self.text_input_entry.delete(0, tk.END)
 
+    def disconnect_from_server(self):
+        """UI command for disconnecting from the server."""
+        if self.connected:
+            self.send_disconnect_notification()
+            # Close the connection and reset UI elements
+            self.connection.client_socket.close()
+            self.handle_disconnection()
+
     def display_message(self, message: str):
+        """Add a message to the text display in the UI
+
+        Args:
+            message (str)
+        """
         self.message_display.config(state=tk.NORMAL)
         self.message_display.insert(tk.END, message + "\n")
         self.message_display.see(tk.END)
         self.message_display.config(state=tk.DISABLED)
+
+    def clear_messages(self) -> None:
+        """Clear the messages display"""
+        self.message_display.config(state=tk.NORMAL)
+        self.message_display.delete(1.0, tk.END)
+        self.message_display.config(state=tk.DISABLED)
+
+    def update_nickname(self) -> None:
+        """Validates and updates the client nickname"""
+        nickname = self.alias_entry.get()
+        if nickname == "":
+            messagebox.showwarning(
+                title="Invalid nickname", message="Nickname can't be empty"
+            )
+            return
+        if nickname == self.connection.alias:
+            messagebox.showwarning(
+                title="Invalid nickname", message="The same nickname is already set."
+            )
+            return
+        message = self.make_message(
+            message=nickname, type=MessageTypeEnum.UPDATE_CLIENT_ALIAS
+        )
+        self.connection.send_message(message.dump())
+        self.connection.set_alias(nickname)
+        self.display_message("Nickname updated successfully")
+
+    def get_raw_client_by_uuid(self, uuid: str) -> Dict[str, str]:
+        for client in self.raw_client_list:
+            if client["uuid"] == uuid:
+                return client
+        raise ValueError("No raw client matches the uuid.")

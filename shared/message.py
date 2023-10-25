@@ -4,7 +4,7 @@ import logging
 from typing import Self
 
 # Create a logger
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Configure the logger
@@ -21,6 +21,7 @@ class MessageTypeEnum(Enum):
     CLIENT_LIST_UPDATE = 4
     DISCONNECT_NOTIFICATION = 5
     UPDATE_CLIENT_ALIAS = 6
+    GENERATED_CLIENT_UUID = 7
 
 
 class Message:
@@ -59,6 +60,7 @@ class Message:
             "message_type": self.message_type.value,
             "message": self.message,
             "destination": self.destination,
+            "from": self.from_,
         }
         return json.dumps(repr_).encode("utf-8")
 
@@ -70,8 +72,9 @@ class Message:
                 type=MessageTypeEnum(int(loaded["message_type"])),
                 message=loaded["message"],
                 destination=loaded["destination"],
+                from_=loaded["from"],
             )
+        except json.decoder.JSONDecodeError as err:
+            raise err
         except ValueError as err:
-            logger.error(err, exc_info=True)
-            logger.info("Malformed message received. Skipping...")
             raise err
