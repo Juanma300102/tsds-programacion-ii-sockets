@@ -45,7 +45,11 @@ class ClientConnection:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client_socket.connect((self.host, self.port))
         except ConnectionRefusedError as err:
-            messagebox.showerror(title="Connection error", message=err.strerror)
+            messagebox.showerror(
+                title="Connection error",
+                message="Couldn't connect. Is the server running?",
+            )
+            raise err
 
     def receive_message(self) -> Message | None:
         try:
@@ -61,11 +65,47 @@ class ClientConnection:
             raise err
 
     def send_message(self, message: bytes):
-        self.client_socket.send(message)
+        try:
+            self.client_socket.send(message)
+        except Exception as err:
+            logger.error(err)
+            raise err
 
     def handle_disconnection(self):
         self.alias = ""
         self.uuid = ""
+
+    def make_message(
+        self,
+        message: str,
+        destination: str | None = None,
+        type: MessageTypeEnum = MessageTypeEnum.CLIENT_TO_SERVER,
+    ) -> Message:
+        """Generates a Message instance.
+
+        Args:
+            message (str)
+            destination (str | None, optional): Defaults to None.
+            type (MessageTypeEnum, optional): Defaults to MessageTypeEnum.CLIENT_TO_SERVER.
+
+        Returns:
+            Message: _description_
+        """
+        instance = Message(message=message, type=type, destination=destination)
+        if type == MessageTypeEnum.CLIENT_TO_CLIENT:
+            logger.info(f"Injecting uuid into message {self.uuid}")
+            instance.from_ = self.uuid
+        return instance
+
+    def send_disconnect_notification(self):
+        """Notify the server to finish the connection when triggered by user."""
+        message = self.make_message(
+            message="", type=MessageTypeEnum.DISCONNECT_NOTIFICATION
+        )
+        self.send_message(message.dump())
+
+    def close(self):
+        self.client_socket.close()
 
 
 class ClientApp:
@@ -117,10 +157,6 @@ class ClientApp:
         self.client_listselect = ttk.Combobox(
             root, values=self.client_list.get(), state="readonly"
         )
-        """ self.client_listbox = tk.Listbox(
-            root, selectmode=tk.SINGLE, listvariable=self.client_list
-            self.client_listbox.pack()
-        ) """
         self.client_listselect.pack(fill=tk.X)
 
         self.message_display_label = tk.Label(root, text="Server Messages:")
@@ -161,15 +197,9 @@ class ClientApp:
         self.clear_messages()
         self.connection.handle_disconnection()
 
-    def send_disconnect_notification(self):
-        """Notify the server to finish the connection when triggered by user."""
-        message = self.make_message(
-            message="", type=MessageTypeEnum.DISCONNECT_NOTIFICATION
-        )
-        self.connection.send_message(message.dump())
-
     def connect_to_server(self):
-        """Validate inputs and stablish connection with the server.
+        """
+        UI command to validate inputs and stablish connection with the server.
         Also it sets the ui config for the connected client status.
         """
         host = self.host_entry.get()
@@ -194,7 +224,8 @@ class ClientApp:
         # Look if there is a nickname in the entry and update it
         nick = self.alias_entry.get()
         if nick:
-            self.update_nickname()
+            update_nickname_thread = threading.Thread(target=self.update_nickname)
+            update_nickname_thread.start()
 
         self.display_message(
             f"Connected to server at {self.connection.host}:{self.connection.port}"
@@ -202,7 +233,7 @@ class ClientApp:
 
     def receive_messages(self):
         """Socket message main handler."""
-        while self.connected:
+        while True:
             try:
                 message = self.connection.receive_message()
                 if message:
@@ -210,11 +241,13 @@ class ClientApp:
             except JSONDecodeError:
                 self.handle_disconnection()
                 self.display_message("Server connection closed.")
+                break
             except OSError as err:
                 self.handle_disconnection()
+                break
 
     def handle_incoming_message(self, message: Message):
-        """Handle parsed incoming messages based on type.
+        """Handle parsed incoming messages based on message_type.
 
         Args:
             message (Message)
@@ -248,7 +281,7 @@ class ClientApp:
         self.display_message(message.message)
 
     def parse_client_list(self, data: str | bytes) -> List[Dict[str, str]]:
-        """takes a json formated string and loads it to internal types
+        """takes a json formated string and loads it to internal object
 
         Args:
             data (str | bytes)
@@ -257,28 +290,6 @@ class ClientApp:
             List[Dict[str, str]]
         """
         return json.loads(data)
-
-    def make_message(
-        self,
-        message: str,
-        destination: str | None = None,
-        type: MessageTypeEnum = MessageTypeEnum.CLIENT_TO_SERVER,
-    ) -> Message:
-        """Generates a Message instance.
-
-        Args:
-            message (str)
-            destination (str | None, optional): Defaults to None.
-            type (MessageTypeEnum, optional): Defaults to MessageTypeEnum.CLIENT_TO_SERVER.
-
-        Returns:
-            Message: _description_
-        """
-        instance = Message(message=message, type=type, destination=destination)
-        if type == MessageTypeEnum.CLIENT_TO_CLIENT:
-            logger.info(f"Injecting uuid into message {self.connection.uuid}")
-            instance.from_ = self.connection.uuid
-        return instance
 
     def send_message(self):
         """UI command to send a message with the current user input content."""
@@ -291,7 +302,7 @@ class ClientApp:
             return
         client = destination.split("@")[0]
         uuid = destination.split("@")[1]
-        message = self.make_message(
+        message = self.connection.make_message(
             message=self.text_input_entry.get(),
             type=MessageTypeEnum.CLIENT_TO_CLIENT,
             destination=uuid,
@@ -303,13 +314,13 @@ class ClientApp:
     def disconnect_from_server(self):
         """UI command for disconnecting from the server."""
         if self.connected:
-            self.send_disconnect_notification()
+            self.connection.send_disconnect_notification()
             # Close the connection and reset UI elements
-            self.connection.client_socket.close()
+            self.connection.close()
             self.handle_disconnection()
 
     def display_message(self, message: str):
-        """Add a message to the text display in the UI
+        """UI command to add a message to the text display
 
         Args:
             message (str)
@@ -338,7 +349,7 @@ class ClientApp:
                 title="Invalid nickname", message="The same nickname is already set."
             )
             return
-        message = self.make_message(
+        message = self.connection.make_message(
             message=nickname, type=MessageTypeEnum.UPDATE_CLIENT_ALIAS
         )
         self.connection.send_message(message.dump())

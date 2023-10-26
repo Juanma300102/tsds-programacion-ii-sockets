@@ -53,7 +53,6 @@ class Client:
         self.client_list.update_clients()
 
         while True:
-            time.sleep(1)
             try:
                 data = self.socket.recv(2065)
                 message = self.parse_message(data)
@@ -97,15 +96,18 @@ class Client:
         """
         if message.message_type == MessageTypeEnum.CLIENT_TO_SERVER:
             logger.info(f"CLIENT MESSAGE: {message.message}")
+            return
         if message.message_type == MessageTypeEnum.UPDATE_CLIENT_ALIAS:
             self.update_alias(message.message)
             logger.info(
                 f"Client {self.uuid} updated its alias to {self.alias} successfuly"
             )
+            return
         if message.message_type == MessageTypeEnum.CLIENT_TO_CLIENT:
             logger.info(f"Received message from {message.from_}")
             logger.info(message.dump())
             self.send_to_destination(message)
+            return
 
     def send_to_destination(self, message: Message) -> None:
         if not message.destination:
@@ -157,12 +159,20 @@ class ClientList:
         """
         Send an updated client list to all connected clients.
         """
+        if not self.clients:
+            logger.info("No clients to send updated list")
+            return
         client_list = [client.dump() for client in self.clients]
         message = Message(
             type=MessageTypeEnum.CLIENT_LIST_UPDATE, message=json.dumps(client_list)
         )
+
         for client in self.clients:
-            client.socket.send(message.dump())
+            try:
+                client.socket.send(message.dump())
+            except Exception as err:
+                logger.error(err)
+                raise err
         logger.info("Updated client list sent to all connected clients")
 
 
