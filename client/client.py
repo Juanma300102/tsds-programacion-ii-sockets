@@ -1,5 +1,6 @@
 import json
 from json.decoder import JSONDecodeError
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 import socket
@@ -54,6 +55,9 @@ class ClientConnection:
     def receive_message(self) -> Message | None:
         try:
             data = self.client_socket.recv(1024)
+            if data == b"":
+                logger.info("Received close notification.")
+                raise ConnectionResetError()
             return Message.decode(data)
         except JSONDecodeError as err:
             raise err
@@ -145,10 +149,23 @@ class ClientApp:
 
         self.alias_frame.pack()
 
+        self.connection_buttons_frame = tk.Frame(root)
+
         self.connect_button = tk.Button(
-            root, text="Connect", command=self.connect_to_server
+            self.connection_buttons_frame,
+            text="Connect",
+            command=self.connect_to_server,
         )
-        self.connect_button.pack()
+        self.connect_button.grid(column=0, row=0)
+
+        self.disconnect_button = tk.Button(
+            self.connection_buttons_frame,
+            text="Disconnect",
+            command=self.disconnect_from_server,
+        )
+        self.disconnect_button.grid(column=1, row=0)
+
+        self.connection_buttons_frame.pack()
 
         self.client_list = tk.Variable(root, [])
 
@@ -174,11 +191,6 @@ class ClientApp:
 
         # self.connect_button.config(state=tk.DISABLED)
         self.connected = False
-
-        self.disconnect_button = tk.Button(
-            root, text="Disconnect", command=self.disconnect_from_server
-        )
-        self.disconnect_button.pack()
 
     def handle_disconnection(self):
         """Subsequent events following a disconnection from the server.
@@ -224,6 +236,7 @@ class ClientApp:
         # Look if there is a nickname in the entry and update it
         nick = self.alias_entry.get()
         if nick:
+            time.sleep(0.5)
             update_nickname_thread = threading.Thread(target=self.update_nickname)
             update_nickname_thread.start()
 
@@ -238,11 +251,17 @@ class ClientApp:
                 message = self.connection.receive_message()
                 if message:
                     self.handle_incoming_message(message)
+            except ConnectionResetError as err:
+                messagebox.showinfo(
+                    "Connection closed.", "The server closed the connection."
+                )
+                break
             except JSONDecodeError:
                 self.handle_disconnection()
                 self.display_message("Server connection closed.")
                 break
             except OSError as err:
+                logger.error(err)
                 self.handle_disconnection()
                 break
 

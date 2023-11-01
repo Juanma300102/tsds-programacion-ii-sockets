@@ -55,6 +55,11 @@ class Client:
         while True:
             try:
                 data = self.socket.recv(2065)
+                if data == b"":
+                    logger.info(
+                        f"Ending connection with client {client_ip} due to disconnect notification."
+                    )
+                    break
                 message = self.parse_message(data)
                 if message.message_type == MessageTypeEnum.DISCONNECT_NOTIFICATION:
                     logger.info(
@@ -170,6 +175,9 @@ class ClientList:
         for client in self.clients:
             try:
                 client.socket.send(message.dump())
+            except BrokenPipeError as err:
+                logger.info("Skipping client due to broken pipe...")
+                continue
             except Exception as err:
                 logger.error(err)
                 raise err
@@ -200,6 +208,9 @@ class Server:
 
         while True:
             client_socket, client_addr = self.server_socket.accept()
-            client = Client(client_socket, client_addr, self.client_list)
-            client_handler = threading.Thread(target=client.handle)
+            client_handler = threading.Thread(
+                target=Client(client_socket, client_addr, self.client_list).handle,
+                daemon=True,
+                name=f"handling-client",
+            )
             client_handler.start()
