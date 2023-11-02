@@ -20,6 +20,8 @@ stream_handler = logging.StreamHandler(stdout)
 stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 
+SEND_TO_ALL_LABEL = "Send to all"
+
 
 class ClientConnection:
     port: int
@@ -96,7 +98,10 @@ class ClientConnection:
             Message: _description_
         """
         instance = Message(message=message, type=type, destination=destination)
-        if type == MessageTypeEnum.CLIENT_TO_CLIENT:
+        if (
+            type == MessageTypeEnum.CLIENT_TO_CLIENT
+            or type == MessageTypeEnum.CLIENT_TO_ALL_CLIENTS
+        ):
             logger.info(f"Injecting uuid into message {self.uuid}")
             instance.from_ = self.uuid
         return instance
@@ -174,6 +179,9 @@ class ClientApp:
         self.client_listselect = ttk.Combobox(
             root, values=self.client_list.get(), state="readonly"
         )
+
+        self.client_listselect["values"] = [SEND_TO_ALL_LABEL]
+
         self.client_listselect.pack(fill=tk.X)
 
         self.message_display_label = tk.Label(root, text="Server Messages:")
@@ -282,14 +290,17 @@ class ClientApp:
                 if client["alias"] != ""
                 else f"{client['address'][0]}@{client['uuid']}"
                 for client in clients
-            ]
-            self.client_listselect.set("")
+            ] + [SEND_TO_ALL_LABEL]
             return
+            self.client_listselect.set("")
         if message.message_type == MessageTypeEnum.GENERATED_CLIENT_UUID:
             self.connection.set_uuid(message.message)
             logger.info(f"Received system uuid {message.message}")
             return
-        if message.message_type == MessageTypeEnum.CLIENT_TO_CLIENT:
+        if (
+            message.message_type == MessageTypeEnum.CLIENT_TO_CLIENT
+            or message.message_type == MessageTypeEnum.CLIENT_TO_ALL_CLIENTS
+        ):
             if not message.from_:
                 raise ValueError("Missing from property in message.")
             client = self.get_raw_client_by_uuid(message.from_)
@@ -319,11 +330,18 @@ class ClientApp:
                 message="You must select a client destination",
             )
             return
-        client = destination.split("@")[0]
-        uuid = destination.split("@")[1]
+        if destination == SEND_TO_ALL_LABEL:
+            client = "all"
+            uuid = None
+            type = MessageTypeEnum.CLIENT_TO_ALL_CLIENTS
+        else:
+            client = destination.split("@")[0]
+            uuid = destination.split("@")[1]
+            type = MessageTypeEnum.CLIENT_TO_CLIENT
+
         message = self.connection.make_message(
             message=self.text_input_entry.get(),
-            type=MessageTypeEnum.CLIENT_TO_CLIENT,
+            type=type,
             destination=uuid,
         )
         self.connection.send_message(message.dump())

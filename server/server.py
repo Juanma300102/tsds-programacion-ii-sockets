@@ -2,7 +2,6 @@ import json
 import socket
 import threading
 import logging
-import time
 from typing import Set
 import uuid
 from shared.message import Message, MessageTypeEnum
@@ -113,6 +112,13 @@ class Client:
             logger.info(message.dump())
             self.send_to_destination(message)
             return
+        if message.message_type == MessageTypeEnum.CLIENT_TO_ALL_CLIENTS:
+            destinations: set = self.client_list.get_clients_uuid()
+            destinations.remove(message.from_)
+            for destination in destinations:
+                to_client_message = message
+                to_client_message.destination = destination
+                self.send_to_destination(to_client_message)
 
     def send_to_destination(self, message: Message) -> None:
         if not message.destination:
@@ -137,10 +143,30 @@ class ClientList:
         self.clients: Set[Client] = set()
 
     def get_by_uuid(self, uuid: str) -> Client:
+        """Returns a Client instance based on a uuid.
+
+        Args:
+            uuid (str):
+
+        Raises:
+            ValueError: Not client found.
+
+        Returns:
+            Client
+        """
         for client in self.clients:
             if client.uuid == uuid:
                 return client
         raise ValueError("No client match the given uuid")
+
+    def get_clients_uuid(self) -> Set[str]:
+        """Returns a client's uuid list of the connected clients.
+        ( intended for sending a message to all connected clients. )
+
+        Returns:
+            List[str]: _description_
+        """
+        return set([client.uuid for client in self.clients])
 
     def add_client(self, client: Client) -> None:
         """

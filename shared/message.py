@@ -22,6 +22,7 @@ class MessageTypeEnum(Enum):
     DISCONNECT_NOTIFICATION = 5
     UPDATE_CLIENT_ALIAS = 6
     GENERATED_CLIENT_UUID = 7
+    CLIENT_TO_ALL_CLIENTS = 8
 
 
 class Message:
