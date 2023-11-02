@@ -5,4 +5,7 @@ if __name__ == "__main__":
     PORT = 12345  # You can choose any available port
 
     server = Server(HOST, PORT)
-    server.start()
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        server.server_socket.close()
